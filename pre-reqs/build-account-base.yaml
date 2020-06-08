@@ -1,0 +1,666 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates the base infrastructure for the Dojo in the Build account.
+
+Parameters:
+  
+  Namespace:
+    Description: A prefix used to name provisioned resources
+    Type: String
+
+  TargetAccount:
+    Description: ID of AWS Account where Stacker will provision resources
+    Type: String
+
+Resources:
+
+#===========================================================================
+# Stacker Master Role (role assumed by Stacker during deployments)
+#===========================================================================
+
+  StackerMasterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Namespace}-StackerMasterRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+          Action:
+            - "sts:AssumeRole"
+      Tags: 
+        - Key: namespace
+          Value: !Ref Namespace
+
+#===========================================================================
+# Stacker Master Role Assume Role Policies (for Cross-Account Deployments)
+#===========================================================================
+
+  AssumeStackerExecutionRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${Namespace}-AssumeStackerExecutionRolePolicy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - "sts:AssumeRole"
+          Resource: !Sub "arn:aws:iam::${TargetAccount}:role/StackerExecutionRole"
+      Roles:
+        - !Ref StackerMasterRole
+
+#================================================================================
+# IAM Service Roles - AWS CodeBuild
+#================================================================================
+
+  CFNNagCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Namespace}-CodeBuildCFNNagRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            Service:
+              - codebuild.amazonaws.com
+      Tags: 
+        - Key: namespace
+          Value: !Ref Namespace
+
+  CFNLintCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Namespace}-CodeBuildCFNLintRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            Service:
+              - codebuild.amazonaws.com
+      Tags: 
+        - Key: namespace
+          Value: !Ref Namespace
+
+  DeploymentCodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Namespace}-CodeBuildDeployerRole
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            Service:
+              - codebuild.amazonaws.com
+      Tags: 
+        - Key: namespace
+          Value: !Ref Namespace
+
+#================================================================================
+# IAM Service Role - AWS CodePipeline
+#================================================================================
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${Namespace}-CodePipeline
+      Path: /
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Principal:
+            Service:
+              - codepipeline.amazonaws.com
+      Tags: 
+        - Key: namespace
+          Value: !Ref Namespace
+
+#================================================================================
+# IAM Policies for CodePipeline and CodeBuild
+#================================================================================
+
+  CodeBuildLogsIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodeBuildLogs
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: "*"
+      Roles:
+        - !Ref CFNNagCodeBuildServiceRole
+        - !Ref CFNLintCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+
+  CodePipelineArtifactsS3BucketIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineArtifactsBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - 's3:List*'
+          Resource: "*"
+      Roles:
+        - !Ref CFNNagCodeBuildServiceRole
+        - !Ref CFNLintCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineArtifactsS3BucketObjectsIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineArtifactsObject
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - s3:Get*
+            - s3:Put*
+          Resource: 
+            - !Sub "arn:aws:s3:::${Namespace}-*"
+            - !Sub "arn:aws:s3:::${Namespace}-*/*"
+      Roles:
+        - !Ref CFNNagCodeBuildServiceRole
+        - !Ref CFNLintCodeBuildServiceRole
+        - !Ref DeploymentCodeBuildServiceRole
+        - !Ref CodePipelineServiceRole
+
+  CodeBuildAssumeStackerMasterRoleIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineAssumeStackerRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - sts:AssumeRole
+          Resource: !GetAtt StackerMasterRole.Arn
+      Roles:
+        - !Ref DeploymentCodeBuildServiceRole
+
+  CodePipelineBaseIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineBase
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - iam:PassRole
+            - codepipeline:*
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineCodeBuildAccessIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineCodeBuild
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - codebuild:StartBuild
+            - codebuild:BatchGetBuilds
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+  CodePipelineCodeCommitAccessIAMPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineCodeCommit
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - codecommit:GetBranch
+            - codecommit:GetCommit
+            - codecommit:UploadArchive
+            - codecommit:GetUploadArchiveStatus
+            - codecommit:CancelUploadArchive
+          Resource: "*"
+      Roles:
+        - !Ref CodePipelineServiceRole
+
+#================================================================================
+# Custom Resource to Generate User Password
+#================================================================================
+
+  GeneratePasswordLambdaRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 'lambda.amazonaws.com'
+            Action:
+              - 'sts:AssumeRole'
+      Path: '/'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+
+  GeneratePasswordLambda: 
+    Type: "AWS::Lambda::Function"
+    Properties: 
+      Handler: "index.handler"
+      Role: !GetAtt GeneratePasswordLambdaRole.Arn
+      Code: 
+        ZipFile: >
+          var cfr = require('cfn-response');
+          var crypto = require('crypto');
+          
+          exports.handler = (event, context) => {
+            var resID = event.PhysicalResourceId;
+            var teamName = event.ResourceProperties.teamName;
+            var password = teamName + "-" + crypto.randomBytes(3).toString("hex");
+            
+            cfr.send(event, context, cfr.SUCCESS, {teamPassword: password}, resID)
+          }
+      Runtime: "nodejs12.x"
+      Timeout: "30"
+
+  GeneratePassword:
+    Type: Custom::GeneratePassword
+    Properties:
+      ServiceToken: !GetAtt GeneratePasswordLambda.Arn
+      teamName: !Ref Namespace
+
+  UserPasswordSecretsManager:
+    Type: AWS::SecretsManager::Secret
+    Properties: 
+      Description: !Sub Password for ${Namespace}
+      Name: !Sub /${Namespace}/password
+      SecretString: 
+        !GetAtt GeneratePassword.teamPassword
+
+#================================================================================
+# IAM User
+#================================================================================
+
+  TeamUser:
+    Type: AWS::IAM::User
+    Properties: 
+      LoginProfile: 
+        Password: !GetAtt GeneratePassword.teamPassword
+        PasswordResetRequired: false
+      ManagedPolicyArns: 
+        - !Ref DenyOtherRegionsPolicy
+        - !Ref IAMAccessPolicy
+        - !Ref S3AccessPolicy
+        - !Ref SSMAccessPolicy
+        - !Ref CloudFormationAccessPolicy
+        - !Ref CodeBuildAccessPolicy
+        - !Ref CodePipelineAccessPolicy
+        - !Ref CloudWatchLogsAccessPolicy
+        - !Ref SecretsManagerAccessPolicy
+        - !Ref Cloud9AccessPolicy
+      Path: /
+      Tags: 
+        - Key: namespace 
+          Value: !Ref Namespace
+      UserName: !Ref Namespace
+
+#================================================================================
+# IAM Policies for the team user
+#================================================================================
+
+  DenyOtherRegionsPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-DenyOtherRegionsAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Deny
+          Action:
+            - "*"
+          Resource:
+            - "*"
+          Condition:
+            ForAnyValue:StringNotEqualsIfExists:
+              aws:RequestedRegion: [!Sub "${AWS::Region}"]
+
+  SecretsManagerAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-SecretsManagerAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Deny
+          Action:
+            - secretsmanager:*
+          Resource:
+            - '*'
+
+  IAMAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-IAMAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - iam:GetRole
+            - iam:GetPolicyVersion
+            - iam:ListRoleTags
+            - iam:GetPolicy
+            - iam:ListAttachedRolePolicies
+            - iam:ListRolePolicies
+            - iam:GetRolePolicy
+            - iam:PassRole
+          Resource:
+            - arn:aws:iam::*:policy/*
+            - !Sub arn:aws:iam::${AWS::AccountId}:role/${Namespace}-*
+        - Effect: Allow
+          Action:
+            - iam:ListPolicies
+            - iam:ListRoles
+          Resource:
+            - "*"
+        - Effect: Allow
+          Action:
+            - "sts:AssumeRole"
+          Resource: !Sub "arn:aws:iam::${TargetAccount}:role/TeamAssumeRole"
+  
+  S3AccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-S3Access
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - s3:List*
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - s3:PutBucketPublicAccessBlock
+            - s3:PutBucketTagging
+            - s3:PutBucketAcl
+            - s3:PutBucketPolicy
+            - s3:CreateBucket
+            - s3:Get*
+            - s3:PutEncryptionConfiguration
+            - s3:PutBucketVersioning
+            - s3:PutObject
+            - s3:PutObjectTagging
+            - s3:PutObjectAcl
+          Resource:
+            - !Sub arn:aws:s3:::${Namespace}-*
+            - arn:aws:s3:::cf-templates-*
+        - Effect: Allow
+          Action:
+            - s3:Delete*
+          Resource:
+            - !Sub arn:aws:s3:::${Namespace}-*
+
+  SSMAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-SSMAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - ssm:GetParameters
+          Resource: "*"
+
+  CloudFormationAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CloudFormationAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - cloudformation:CreateUploadBucket
+            - cloudformation:ListExports
+            - cloudformation:ListStacks
+            - cloudformation:ListImports
+            - cloudformation:GetTemplateSummary
+            - cloudformation:DescribeStacks
+          Resource: 
+            - '*'
+        - Effect: Allow
+          Action:
+            - cloudformation:CancelUpdateStack
+            - cloudformation:DescribeStackResources
+            - cloudformation:SignalResource
+            - cloudformation:UpdateTerminationProtection
+            - cloudformation:DescribeStackResource
+            - cloudformation:CreateChangeSet
+            - cloudformation:DeleteChangeSet
+            - cloudformation:ContinueUpdateRollback
+            - cloudformation:DescribeStackResourceDrifts
+            - cloudformation:GetStackPolicy
+            - cloudformation:DescribeStackEvents
+            - cloudformation:CreateStack
+            - cloudformation:GetTemplate
+            - cloudformation:DeleteStack
+            - cloudformation:TagResource
+            - cloudformation:UpdateStack
+            - cloudformation:DescribeChangeSet
+            - cloudformation:UntagResource
+            - cloudformation:ExecuteChangeSet
+            - cloudformation:ListChangeSets
+            - cloudformation:ListStackResources
+          Resource: 
+            - !Sub arn:aws:cloudformation:us-east-1:${AWS::AccountId}:stack/${Namespace}-*/*
+        - Effect: Deny
+          Action:
+            - cloudformation:Delete*
+          Resource: 
+            - !Sub arn:aws:cloudformation:us-east-1:${AWS::AccountId}:stack/cf-iam-roles/*
+
+  CodeBuildAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodeBuildAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - codebuild:ListSharedProjects
+            - codebuild:ListBuilds
+            - codebuild:ListProjects
+            - codebuild:ListRepositories
+          Resource: "*"
+        - Effect: Allow
+          Action:
+            - codebuild:ListBuildsForProject
+          Resource: 
+            - arn:aws:codebuild:*:*:project/*
+        - Effect: Allow
+          Action:
+            - codebuild:StopBuild
+            - codebuild:DeleteProject
+            - codebuild:StartBuild
+            - codebuild:UpdateProject
+            - codebuild:CreateProject
+            - codebuild:*Get*
+          Resource: 
+            - !Sub arn:aws:codebuild:us-east-1:227756917118:project/${Namespace}-*
+
+  CodePipelineAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CodePipelineAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - codepipeline:ListPipelines
+          Resource:
+            - arn:aws:codepipeline:*:*:*
+        - Effect: Allow
+          Action:
+            - codepipeline:ListPipelineExecutions
+            - codepipeline:StartPipelineExecution
+            - codepipeline:ListActionExecutions
+            - codepipeline:CreatePipeline
+            - codepipeline:ListTagsForResource
+            - codepipeline:DeletePipeline
+            - codepipeline:TagResource
+            - codepipeline:StopPipelineExecution
+            - codepipeline:GetPipeline
+            - codepipeline:UntagResource
+            - codepipeline:UpdatePipeline
+            - codepipeline:GetPipelineState
+            - codepipeline:GetPipelineExecution
+          Resource: 
+            - !Sub arn:aws:codepipeline:us-east-1:227756917118:${Namespace}-*
+        - Effect: Allow
+          Action:
+            - codepipeline:RetryStageExecution
+          Resource: 
+            - !Sub arn:aws:codepipeline:us-east-1:227756917118:${Namespace}-*/*
+
+  CloudWatchLogsAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-CloudWatchLogsAccess
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - logs:GetLogGroupFields
+          Resource:
+            - !Sub arn:aws:logs:us-east-1:227756917118:log-group:/aws/codebuild/${Namespace}-*
+        - Effect: Allow
+          Action:
+            - logs:GetLogEvents
+          Resource: 
+            - !Sub arn:aws:logs:us-east-1:227756917118:log-group:/aws/codebuild/${Namespace}-*:log-stream:*
+        - Effect: Allow
+          Action:
+            - logs:GetLogRecord
+            - logs:GetQueryResults
+            - logs:GetLogDelivery
+          Resource: 
+            - "*"
+  
+  Cloud9AccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub ${Namespace}-Cloud9Access
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: Allow
+          Action:
+            - cloud9:*
+          Resource: 
+            - '*'
+
+#================================================================================
+# Parameter Store
+#================================================================================
+
+  CFNNagCodeBuildServiceRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: The ARN of the CFNNag CodeBuild Service Role
+      Name: !Sub /dojo/${Namespace}/iam/role/cfnnag-codebuild-service/arn
+      Tags:
+        namespace: !Ref Namespace
+      Tier: Standard
+      Type: String
+      Value: !GetAtt CFNNagCodeBuildServiceRole.Arn
+
+  CFNLintCodeBuildServiceRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: The ARN of the CFNLint CodeBuild Service Role
+      Name: !Sub /dojo/${Namespace}/iam/role/cfnlint-codebuild-service/arn
+      Tags:
+        namespace: !Ref Namespace
+      Tier: Standard
+      Type: String
+      Value: !GetAtt CFNLintCodeBuildServiceRole.Arn
+
+  DeploymentCodeBuildServiceRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: The ARN of the Deployment CodeBuild Service Role
+      Name: !Sub /dojo/${Namespace}/iam/role/deployment-codebuild-service/arn
+      Tags:
+        namespace: !Ref Namespace
+      Tier: Standard
+      Type: String
+      Value: !GetAtt DeploymentCodeBuildServiceRole.Arn
+
+  CodePipelineServiceRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: The ARN of the CodePipeline Service Role
+      Name: !Sub /dojo/${Namespace}/iam/role/codepipeline-service/arn
+      Tags:
+        namespace: !Ref Namespace
+      Tier: Standard
+      Type: String
+      Value: !GetAtt CodePipelineServiceRole.Arn
+
+  StackerMasterRoleArnParameter:
+    Type: AWS::SSM::Parameter
+    Properties: 
+      Description: The ARN of the Stacker Master Role
+      Name: !Sub /dojo/${Namespace}/iam/role/stacker-master/arn
+      Tags:
+        namespace: !Ref Namespace
+      Tier: Standard
+      Type: String
+      Value: !GetAtt StackerMasterRole.Arn
+
+#================================================================================
+# Cloud9 Environment
+#================================================================================
+
+  Cloud9Environment:
+    Type: AWS::Cloud9::EnvironmentEC2
+    Properties: 
+      AutomaticStopTimeMinutes: 20160
+      Description: !Sub ${Namespace} Cloud9 environment
+      InstanceType: t3.nano
+      Name: !Sub ${Namespace}-environment
+      OwnerArn: !GetAtt TeamUser.Arn

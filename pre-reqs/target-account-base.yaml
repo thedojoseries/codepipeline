@@ -1,0 +1,103 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Creates a cross-account IAM role for Stacker to be able to deploy stacks in this (Target) account
+
+Parameters:
+
+  StackerMasterAccountId:
+    Description: Account ID where the StackerMasterRole lives
+    Type: String
+
+Resources:
+
+  StackerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: StackerExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+                AWS: !Sub "arn:aws:iam::${StackerMasterAccountId}:root"
+      Path: /
+
+  StackerExecutionRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: StackerExecutionRolePolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - cloudformation:*
+            - ec2:*
+            - s3:*
+            - iam:*
+            - ssm:GetParameters
+          Resource: "*"
+      Roles:
+        - !Ref StackerExecutionRole
+
+  TeamAssumeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: TeamAssumeRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Action:
+              - 'sts:AssumeRole'
+            Effect: Allow
+            Principal:
+                AWS: !Sub "arn:aws:iam::${StackerMasterAccountId}:root"
+      Path: /
+
+  TeamAssumeRolePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: TeamAssumeRolePolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+        - Effect: "Allow"
+          Action:
+            - ec2:List*
+            - ec2:Get*
+            - ec2:Describe*
+            - cloudformation:List*
+            - cloudformation:Get*
+          Resource: "*"
+      Roles:
+        - !Ref TeamAssumeRole
+
+  TeamAssumeRoleDenyOtherRegionsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: DenyOtherRegionsPolicy
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Deny
+            Action:
+              - "*"
+            Resource:
+              - "*"
+            Condition:
+              ForAnyValue:StringNotEqualsIfExists:
+                aws:RequestedRegion: [!Sub "${AWS::Region}"]
+      Roles:
+        - !Ref TeamAssumeRole
+
+Outputs:
+
+  StackerExecutionRoleArn:
+    Value: !GetAtt StackerExecutionRole.Arn
+
+  StackerExecutionRoleName:
+    Value: !Ref StackerExecutionRole
+  
+  TeamAssumeRoleName:
+    Value: !Ref TeamAssumeRole
